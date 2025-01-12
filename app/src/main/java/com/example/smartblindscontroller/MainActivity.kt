@@ -1,6 +1,8 @@
 package com.example.smartblindscontroller
 
 import android.os.Bundle
+import android.content.Context
+import android.content.SharedPreferences
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -18,15 +20,19 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 class MainActivity : ComponentActivity() {
+    private lateinit var sharedPreferences: SharedPreferences
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        sharedPreferences = getSharedPreferences("SmartBlindsPrefs", Context.MODE_PRIVATE)
+
         setContent {
             MaterialTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    SmartBlindsApp(this)
+                    SmartBlindsApp(this, sharedPreferences)
                 }
             }
         }
@@ -35,7 +41,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SmartBlindsApp(activity: ComponentActivity) {
+fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPreferences) {
     var openTime by remember { mutableStateOf("07:00") }
     var closeTime by remember { mutableStateOf("20:00") }
     var openLuxText by remember { mutableStateOf("50000") }
@@ -49,7 +55,9 @@ fun SmartBlindsApp(activity: ComponentActivity) {
 
     // Time sync state variables
     var deviceTimeSync by remember { mutableStateOf(false) }
-    var lastSyncTime by remember { mutableStateOf("Never") }
+    var lastSyncTime by remember {
+        mutableStateOf(sharedPreferences.getString("lastSyncTime", "Never") ?: "Never")
+    }
 
     // Function to update sensor readings (placeholder)
     fun updateSensorReadings() {
@@ -132,7 +140,9 @@ fun SmartBlindsApp(activity: ComponentActivity) {
                         onClick = {
                             syncDeviceTime()
                             val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                            lastSyncTime = sdf.format(Date())
+                            val newLastSyncTime = sdf.format(Date())
+                            lastSyncTime = newLastSyncTime
+                            sharedPreferences.edit().putString("lastSyncTime", newLastSyncTime).apply()
                             deviceTimeSync = true
                         }
                     ) {
