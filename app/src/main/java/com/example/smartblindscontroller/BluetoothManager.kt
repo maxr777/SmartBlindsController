@@ -1,5 +1,7 @@
+// BluetoothManager.kt
 package com.example.smartblindscontroller
 
+import java.util.Calendar
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -283,6 +285,7 @@ class BluetoothManager(private val context: Context) {
                     return@withContext BluetoothResult.Error("Not connected to device")
                 }
 
+                // Format settings string according to ESP32 format
                 val settingsString = StringBuilder().apply {
                     append("$UPDATE_SETTINGS|")
                     settings.forEach { (key, value) ->
@@ -291,19 +294,41 @@ class BluetoothManager(private val context: Context) {
                     append("\n")
                 }.toString()
 
+                Log.d(TAG, "Sending settings: $settingsString")
+
+                // Clear any pending input first
+                while (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                    bluetoothSocket?.inputStream?.skip(bluetoothSocket?.inputStream?.available()?.toLong() ?: 0)
+                }
+
                 bluetoothSocket?.outputStream?.write(settingsString.toByteArray())
                 bluetoothSocket?.outputStream?.flush()
 
                 // Wait for response with timeout
                 val buffer = ByteArray(1024)
+                var response = ""
+
                 withTimeout(5000) {
-                    val bytes = bluetoothSocket?.inputStream?.read(buffer)
-                    if (bytes != null && bytes > 0) {
-                        val response = String(buffer, 0, bytes)
-                        if (!response.startsWith("OK")) {
-                            throw IOException("Invalid settings response: $response")
+                    // Wait a bit for the response to start arriving
+                    delay(100)
+
+                    // Read until we get a complete response
+                    while (!response.contains("OK") && !response.contains("ERROR")) {
+                        if (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                            val bytes = bluetoothSocket?.inputStream?.read(buffer)
+                            if (bytes != null && bytes > 0) {
+                                response += String(buffer, 0, bytes)
+                            }
                         }
+                        // Small delay to prevent tight polling
+                        delay(50)
                     }
+                }
+
+                Log.d(TAG, "Received response: $response")
+
+                if (!response.contains("OK")) {
+                    throw IOException("Invalid response: $response")
                 }
 
                 BluetoothResult.Success
@@ -316,8 +341,76 @@ class BluetoothManager(private val context: Context) {
         }
     }
 
+    @Suppress("DEPRECATION")
     suspend fun syncTime(): BluetoothResult {
-        return sendCommand(MANUAL_SYNC_TIME)
+        if (!hasRequiredPermissions()) {
+            _errorState.value = "Missing Bluetooth permissions"
+            return BluetoothResult.Error("Missing Bluetooth permissions")
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                if (!_connectionState.value) {
+                    _errorState.value = "Not connected to device"
+                    return@withContext BluetoothResult.Error("Not connected to device")
+                }
+
+                // Get current time using Calendar API for better compatibility
+                val calendar = Calendar.getInstance()
+                val timeString = StringBuilder().apply {
+                    append("$MANUAL_SYNC_TIME|")
+                    append(String.format("%04d-%02d-%02d %02d:%02d:%02d",
+                        calendar.get(Calendar.YEAR),
+                        calendar.get(Calendar.MONTH) + 1, // Calendar months are 0-based
+                        calendar.get(Calendar.DAY_OF_MONTH),
+                        calendar.get(Calendar.HOUR_OF_DAY),
+                        calendar.get(Calendar.MINUTE),
+                        calendar.get(Calendar.SECOND)
+                    ))
+                    append("|\n")
+                }.toString()
+
+                Log.d(TAG, "Sending time sync: $timeString")
+
+                // Clear any pending input
+                while (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                    bluetoothSocket?.inputStream?.skip(bluetoothSocket?.inputStream?.available()?.toLong() ?: 0)
+                }
+
+                bluetoothSocket?.outputStream?.write(timeString.toByteArray())
+                bluetoothSocket?.outputStream?.flush()
+
+                // Wait for response with timeout
+                val buffer = ByteArray(1024)
+                var response = ""
+
+                withTimeout(5000) {
+                    delay(100)
+                    while (!response.contains("OK") && !response.contains("ERROR")) {
+                        if (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                            val bytes = bluetoothSocket?.inputStream?.read(buffer)
+                            if (bytes != null && bytes > 0) {
+                                response += String(buffer, 0, bytes)
+                            }
+                        }
+                        delay(50)
+                    }
+                }
+
+                Log.d(TAG, "Received response: $response")
+
+                if (!response.contains("OK")) {
+                    throw IOException("Invalid response: $response")
+                }
+
+                BluetoothResult.Success
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _errorState.value = "Time sync failed: ${e.message}"
+                _connectionState.value = false
+                BluetoothResult.Error(e.message ?: "Unknown error")
+            }
+        }
     }
 
     fun disconnect() {
