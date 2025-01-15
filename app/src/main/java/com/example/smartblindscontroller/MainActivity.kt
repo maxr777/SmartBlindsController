@@ -1,3 +1,4 @@
+//MainActivity.kt
 package com.example.smartblindscontroller
 
 import android.os.Bundle
@@ -16,15 +17,88 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import android.app.TimePickerDialog
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 class MainActivity : ComponentActivity() {
     private lateinit var sharedPreferences: SharedPreferences
+    private lateinit var bluetoothManager: BluetoothManager
+
+    private fun checkBluetoothPermissions(): Boolean {
+        val permissions = listOf(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.BLUETOOTH_ADMIN,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+
+        val hasPermissions = permissions.all { permission ->
+            ActivityCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
+        }
+
+        if (!hasPermissions) {
+            ActivityCompat.requestPermissions(
+                this,
+                permissions.toTypedArray(),
+                1
+            )
+        }
+
+        return hasPermissions
+    }
+
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1) {
+            if (grantResults.isNotEmpty() &&
+                grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                // Initialize bluetooth manager only after permissions are granted
+                bluetoothManager = BluetoothManager(this)
+                // Force a recompose to update the UI
+                setContent {
+                    MaterialTheme {
+                        Surface(
+                            modifier = Modifier.fillMaxSize(),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            SmartBlindsApp(this, sharedPreferences, bluetoothManager)
+                        }
+                    }
+                }
+            } else {
+                Toast.makeText(
+                    this,
+                    "Bluetooth permissions are required for this app",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Initialize shared preferences first
         sharedPreferences = getSharedPreferences("SmartBlindsPrefs", Context.MODE_PRIVATE)
+
+        // Only initialize BluetoothManager if permissions are granted
+        if (checkBluetoothPermissions()) {
+            bluetoothManager = BluetoothManager(this)
+        }
 
         setContent {
             MaterialTheme {
@@ -32,22 +106,54 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    SmartBlindsApp(this, sharedPreferences)
+                    var errorMessage by remember { mutableStateOf<String?>(null) }
+
+                    // Add a check for bluetoothManager initialization
+                    if (!::bluetoothManager.isInitialized) {
+                        Text(
+                            "Waiting for Bluetooth permissions...",
+                            modifier = Modifier.padding(16.dp)
+                        )
+                        return@Surface
+                    }
+
+                    LaunchedEffect(Unit) {
+                        bluetoothManager.errorState.collect { error ->
+                            errorMessage = error
+                        }
+                    }
+
+                    errorMessage?.let { error ->
+                        Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
+                        errorMessage = null
+                    }
+
+                    SmartBlindsApp(this, sharedPreferences, bluetoothManager)
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        bluetoothManager.disconnect()
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPreferences) {
+fun SmartBlindsApp(
+    activity: ComponentActivity,
+    sharedPreferences: SharedPreferences,
+    bluetoothManager: BluetoothManager
+) {
     var openTime by remember { mutableStateOf("07:00") }
     var closeTime by remember { mutableStateOf("20:00") }
     var openLuxText by remember { mutableStateOf("50000") }
     var closeLuxText by remember { mutableStateOf("10000") }
     var openMode by remember { mutableStateOf("TIME") }
     var closeMode by remember { mutableStateOf("TIME") }
+    var isConnected by remember { mutableStateOf(false) }
 
     // State variables for sensor readings
     var currentTime by remember { mutableStateOf("--:--") }
@@ -59,10 +165,11 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
         mutableStateOf(sharedPreferences.getString("lastSyncTime", "Never") ?: "Never")
     }
 
-    // Function to update sensor readings (placeholder)
-    fun updateSensorReadings() {
-        currentTime = getCurrentTimeFromESP32()
-        currentLux = getCurrentLuxFromESP32()
+    // Collect Bluetooth connection state
+    LaunchedEffect(Unit) {
+        bluetoothManager.connectionState.collect { connected ->
+            isConnected = connected
+        }
     }
 
     Column(
@@ -72,6 +179,45 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Bluetooth Connection Card
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Bluetooth Connection",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        if (isConnected) "Connected" else "Disconnected",
+                        color = if (isConnected) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.error
+                    )
+                    FilledTonalButton(
+                        onClick = {
+                            activity.lifecycleScope.launch {
+                                if (!isConnected) {
+                                    bluetoothManager.connectToESP32()
+                                } else {
+                                    bluetoothManager.disconnect()
+                                }
+                            }
+                        }
+                    ) {
+                        Text(if (isConnected) "Disconnect" else "Connect")
+                    }
+                }
+            }
+        }
+
         // Current Readings Card
         ElevatedCard(
             modifier = Modifier.fillMaxWidth()
@@ -104,7 +250,7 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
                     }
                 }
                 FilledTonalButton(
-                    onClick = { updateSensorReadings() },
+                    onClick = { /* Add reading refresh logic */ },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Refresh Readings")
@@ -138,12 +284,14 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
                     }
                     FilledTonalButton(
                         onClick = {
-                            syncDeviceTime()
-                            val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                            val newLastSyncTime = sdf.format(Date())
-                            lastSyncTime = newLastSyncTime
-                            sharedPreferences.edit().putString("lastSyncTime", newLastSyncTime).apply()
-                            deviceTimeSync = true
+                            activity.lifecycleScope.launch {
+                                bluetoothManager.syncTime()
+                                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                                val newLastSyncTime = sdf.format(Date())
+                                lastSyncTime = newLastSyncTime
+                                sharedPreferences.edit().putString("lastSyncTime", newLastSyncTime).apply()
+                                deviceTimeSync = true
+                            }
                         }
                     ) {
                         Text("Sync Device Time")
@@ -175,13 +323,21 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilledTonalButton(
-                        onClick = { sendCommand("OPEN") },
+                        onClick = {
+                            activity.lifecycleScope.launch {
+                                bluetoothManager.sendCommand(BluetoothManager.MANUAL_TURN_ON)
+                            }
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("OPEN")
                     }
                     FilledTonalButton(
-                        onClick = { sendCommand("CLOSE") },
+                        onClick = {
+                            activity.lifecycleScope.launch {
+                                bluetoothManager.sendCommand(BluetoothManager.MANUAL_TURN_OFF)
+                            }
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("CLOSE")
@@ -363,16 +519,17 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
             ) {
                 Button(
                     onClick = {
-                        // Send all settings to ESP32
-                        val settings = mapOf(
-                            "openTime" to openTime,
-                            "closeTime" to closeTime,
-                            "openLux" to openLuxText,
-                            "closeLux" to closeLuxText,
-                            "openMode" to openMode,
-                            "closeMode" to closeMode
-                        )
-                        sendSettings(settings)
+                        activity.lifecycleScope.launch {
+                            val settings = mapOf(
+                                "openTime" to openTime,
+                                "closeTime" to closeTime,
+                                "openLux" to openLuxText,
+                                "closeLux" to closeLuxText,
+                                "openMode" to openMode,
+                                "closeMode" to closeMode
+                            )
+                            bluetoothManager.sendSettings(settings)
+                        }
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -386,51 +543,6 @@ fun SmartBlindsApp(activity: ComponentActivity, sharedPreferences: SharedPrefere
     }
 }
 
-fun syncDeviceTime() {
-    val date = Date()
-    val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-    val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-
-    val timeString = timeFormat.format(date)
-    val dateString = dateFormat.format(date)
-
-    // Send time to ESP32
-    sendTimeToESP32(timeString, dateString)
-}
-
-fun sendTimeToESP32(time: String, date: String) {
-    // Implement the actual ESP32 communication here
-    // This would use your preferred communication method (HTTP, MQTT, etc.)
-    val command = mapOf(
-        "command" to "SET_TIME",
-        "time" to time,
-        "date" to date
-    )
-    println("Sending time sync command: $command")
-    // Add your actual ESP32 communication code here
-}
-
-fun sendCommand(command: String) {
-    // Implement your ESP32 communication here
-    println("Sending command: $command")
-}
-
-fun sendSettings(settings: Map<String, String>) {
-    // Implement your ESP32 settings update here
-    println("Sending settings update: $settings")
-}
-
-// Placeholder functions for ESP32 communication
-fun getCurrentTimeFromESP32(): String {
-    // Implement actual ESP32 time retrieval here
-    return "12:34"
-}
-
-fun getCurrentLuxFromESP32(): String {
-    // Implement actual ESP32 lux reading retrieval here
-    return "45000"
-}
-
 // Validation function for lux input
 fun validateLux(input: String): String {
     return input.filter { it.isDigit() }.let {
@@ -441,3 +553,4 @@ fun validateLux(input: String): String {
         }
     }
 }
+
