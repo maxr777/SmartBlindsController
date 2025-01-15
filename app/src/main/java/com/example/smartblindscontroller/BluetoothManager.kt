@@ -1,4 +1,3 @@
-//BluetoothManager.kt
 package com.example.smartblindscontroller
 
 import android.Manifest
@@ -9,10 +8,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.app.ActivityCompat
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.*
 
@@ -27,6 +25,11 @@ class BluetoothManager(private val context: Context) {
 
     private val _errorState = MutableStateFlow<String?>(null)
     val errorState: StateFlow<String?> = _errorState
+
+    sealed class BluetoothResult {
+        object Success : BluetoothResult()
+        data class Error(val message: String) : BluetoothResult()
+    }
 
     companion object {
         const val MANUAL_TURN_ON = 1
@@ -189,53 +192,95 @@ class BluetoothManager(private val context: Context) {
     }
 
     @Suppress("DEPRECATION")
-    suspend fun sendCommand(command: Int) {
+    suspend fun sendCommand(command: Int): BluetoothResult {
         if (!hasRequiredPermissions()) {
-            throw SecurityException("Missing Bluetooth permissions")
+            _errorState.value = "Missing Bluetooth permissions"
+            return BluetoothResult.Error("Missing Bluetooth permissions")
         }
 
-        withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             try {
                 if (!_connectionState.value) {
-                    throw IOException("Not connected to device")
+                    _errorState.value = "Not connected to device"
+                    return@withContext BluetoothResult.Error("Not connected to device")
                 }
 
                 val commandString = "$command\n"
+                Log.d(TAG, "Sending command: $command")
+
+                // Clear any pending input first
+                while (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                    bluetoothSocket?.inputStream?.skip(bluetoothSocket?.inputStream?.available()?.toLong() ?: 0)
+                }
+
+                // Send command
                 bluetoothSocket?.outputStream?.write(commandString.toByteArray())
                 bluetoothSocket?.outputStream?.flush()
 
-                // Wait for response
+                // Wait for response with timeout
                 val buffer = ByteArray(1024)
-                val bytes = bluetoothSocket?.inputStream?.read(buffer)
-                if (bytes != null && bytes > 0) {
-                    val response = String(buffer, 0, bytes)
-                    if (!response.startsWith("OK")) {
-                        throw IOException("Invalid response: $response")
+                var response = ""
+
+                withTimeout(5000) {
+                    // Wait a bit for the response to start arriving
+                    delay(100)
+
+                    // Read until we get a complete response
+                    while (!response.contains("OK") && !response.contains("ERROR")) {
+                        if (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                            val bytes = bluetoothSocket?.inputStream?.read(buffer)
+                            if (bytes != null && bytes > 0) {
+                                response += String(buffer, 0, bytes)
+                            }
+                        }
+                        // Small delay to prevent tight polling
+                        delay(50)
                     }
                 }
+
+                Log.d(TAG, "Received response: $response")
+
+                if (!response.contains("OK")) {
+                    throw IOException("Invalid response: $response")
+                }
+
+                BluetoothResult.Success
+
             } catch (e: SecurityException) {
                 _errorState.value = "Missing Bluetooth permissions"
                 _connectionState.value = false
-                throw e
+                BluetoothResult.Error(e.message ?: "Security error")
             } catch (e: IOException) {
                 e.printStackTrace()
                 _errorState.value = "Command failed: ${e.message}"
                 _connectionState.value = false
-                throw e
+                // Only attempt reconnect if we've actually lost connection
+                if (bluetoothSocket?.isConnected != true) {
+                    launch {
+                        connectToESP32()
+                    }
+                }
+                BluetoothResult.Error(e.message ?: "IO error")
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _errorState.value = "Unexpected error: ${e.message}"
+                BluetoothResult.Error(e.message ?: "Unknown error")
             }
         }
     }
 
     @Suppress("DEPRECATION")
-    suspend fun sendSettings(settings: Map<String, String>) {
+    suspend fun sendSettings(settings: Map<String, String>): BluetoothResult {
         if (!hasRequiredPermissions()) {
-            throw SecurityException("Missing Bluetooth permissions")
+            _errorState.value = "Missing Bluetooth permissions"
+            return BluetoothResult.Error("Missing Bluetooth permissions")
         }
 
-        withContext(Dispatchers.IO) {
+        return withContext(Dispatchers.IO) {
             try {
                 if (!_connectionState.value) {
-                    throw IOException("Not connected to device")
+                    _errorState.value = "Not connected to device"
+                    return@withContext BluetoothResult.Error("Not connected to device")
                 }
 
                 val settingsString = StringBuilder().apply {
@@ -249,46 +294,30 @@ class BluetoothManager(private val context: Context) {
                 bluetoothSocket?.outputStream?.write(settingsString.toByteArray())
                 bluetoothSocket?.outputStream?.flush()
 
-                // Wait for response
+                // Wait for response with timeout
                 val buffer = ByteArray(1024)
-                val bytes = bluetoothSocket?.inputStream?.read(buffer)
-                if (bytes != null && bytes > 0) {
-                    val response = String(buffer, 0, bytes)
-                    if (!response.startsWith("OK")) {
-                        throw IOException("Invalid settings response: $response")
+                withTimeout(5000) {
+                    val bytes = bluetoothSocket?.inputStream?.read(buffer)
+                    if (bytes != null && bytes > 0) {
+                        val response = String(buffer, 0, bytes)
+                        if (!response.startsWith("OK")) {
+                            throw IOException("Invalid settings response: $response")
+                        }
                     }
                 }
-            } catch (e: SecurityException) {
-                _errorState.value = "Missing Bluetooth permissions"
-                _connectionState.value = false
-                throw e
-            } catch (e: IOException) {
+
+                BluetoothResult.Success
+            } catch (e: Exception) {
                 e.printStackTrace()
                 _errorState.value = "Settings update failed: ${e.message}"
                 _connectionState.value = false
-                throw e
+                BluetoothResult.Error(e.message ?: "Unknown error")
             }
         }
     }
 
-    suspend fun syncTime() {
-        if (!hasRequiredPermissions()) {
-            throw SecurityException("Missing Bluetooth permissions")
-        }
-
-        try {
-            if (!_connectionState.value) {
-                throw IOException("Not connected to device")
-            }
-            sendCommand(MANUAL_SYNC_TIME)
-        } catch (e: SecurityException) {
-            _errorState.value = "Missing Bluetooth permissions"
-            throw e
-        } catch (e: IOException) {
-            e.printStackTrace()
-            _errorState.value = "Time sync failed: ${e.message}"
-            throw e
-        }
+    suspend fun syncTime(): BluetoothResult {
+        return sendCommand(MANUAL_SYNC_TIME)
     }
 
     fun disconnect() {

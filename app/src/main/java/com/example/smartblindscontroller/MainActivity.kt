@@ -205,7 +205,10 @@ fun SmartBlindsApp(
                         onClick = {
                             activity.lifecycleScope.launch {
                                 if (!isConnected) {
-                                    bluetoothManager.connectToESP32()
+                                    val result = bluetoothManager.connectToESP32()
+                                    if (!result) {
+                                        Toast.makeText(activity, "Failed to connect", Toast.LENGTH_SHORT).show()
+                                    }
                                 } else {
                                     bluetoothManager.disconnect()
                                 }
@@ -285,12 +288,18 @@ fun SmartBlindsApp(
                     FilledTonalButton(
                         onClick = {
                             activity.lifecycleScope.launch {
-                                bluetoothManager.syncTime()
-                                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                                val newLastSyncTime = sdf.format(Date())
-                                lastSyncTime = newLastSyncTime
-                                sharedPreferences.edit().putString("lastSyncTime", newLastSyncTime).apply()
-                                deviceTimeSync = true
+                                when (val result = bluetoothManager.syncTime()) {
+                                    is BluetoothManager.BluetoothResult.Error -> {
+                                        Toast.makeText(activity, result.message, Toast.LENGTH_SHORT).show()
+                                    }
+                                    is BluetoothManager.BluetoothResult.Success -> {
+                                        val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+                                        val newLastSyncTime = sdf.format(Date())
+                                        lastSyncTime = newLastSyncTime
+                                        sharedPreferences.edit().putString("lastSyncTime", newLastSyncTime).apply()
+                                        deviceTimeSync = true
+                                    }
+                                }
                             }
                         }
                     ) {
@@ -325,17 +334,32 @@ fun SmartBlindsApp(
                     FilledTonalButton(
                         onClick = {
                             activity.lifecycleScope.launch {
-                                bluetoothManager.sendCommand(BluetoothManager.MANUAL_TURN_ON)
+                                when (val result = bluetoothManager.sendCommand(BluetoothManager.MANUAL_TURN_ON)) {
+                                    is BluetoothManager.BluetoothResult.Error -> {
+                                        Toast.makeText(activity, result.message, Toast.LENGTH_SHORT).show()
+                                    }
+                                    is BluetoothManager.BluetoothResult.Success -> {
+                                        // Command successful
+                                    }
+                                }
                             }
                         },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("OPEN")
                     }
+
                     FilledTonalButton(
                         onClick = {
                             activity.lifecycleScope.launch {
-                                bluetoothManager.sendCommand(BluetoothManager.MANUAL_TURN_OFF)
+                                when (val result = bluetoothManager.sendCommand(BluetoothManager.MANUAL_TURN_OFF)) {
+                                    is BluetoothManager.BluetoothResult.Error -> {
+                                        Toast.makeText(activity, result.message, Toast.LENGTH_SHORT).show()
+                                    }
+                                    is BluetoothManager.BluetoothResult.Success -> {
+                                        // Command successful
+                                    }
+                                }
                             }
                         },
                         modifier = Modifier.weight(1f)
@@ -528,7 +552,14 @@ fun SmartBlindsApp(
                                 "openMode" to openMode,
                                 "closeMode" to closeMode
                             )
-                            bluetoothManager.sendSettings(settings)
+                            when (val result = bluetoothManager.sendSettings(settings)) {
+                                is BluetoothManager.BluetoothResult.Error -> {
+                                    Toast.makeText(activity, result.message, Toast.LENGTH_SHORT).show()
+                                }
+                                is BluetoothManager.BluetoothResult.Success -> {
+                                    Toast.makeText(activity, "Settings updated successfully", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
