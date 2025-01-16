@@ -158,6 +158,8 @@ fun SmartBlindsApp(
     // State variables for sensor readings
     var currentTime by remember { mutableStateOf("--:--") }
     var currentLux by remember { mutableStateOf("0") }
+    var currentBlindsStatus by remember { mutableStateOf("--") }
+    var isRefreshing by remember { mutableStateOf(false) }
 
     // Time sync state variables
     var deviceTimeSync by remember { mutableStateOf(false) }
@@ -252,14 +254,61 @@ fun SmartBlindsApp(
                         )
                     }
                 }
-                FilledTonalButton(
-                    onClick = { /* Add reading refresh logic */ },
-                    modifier = Modifier.fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
                 ) {
-                    Text("Refresh Readings")
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Blinds Status")
+                        Text(
+                            currentBlindsStatus,
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = when (currentBlindsStatus) {
+                                "OPEN" -> MaterialTheme.colorScheme.primary
+                                "CLOSED" -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+                }
+                FilledTonalButton(
+                    onClick = {
+                        activity.lifecycleScope.launch {
+                            isRefreshing = true
+                            try {
+                                bluetoothManager.requestStatus()
+                                    .onSuccess { status ->
+                                        currentTime = status.time
+                                        currentLux = String.format("%.1f", status.lux)
+                                        currentBlindsStatus = status.blinds
+                                    }
+                                    .onFailure { error ->
+                                        Toast.makeText(
+                                            activity,
+                                            "Failed to refresh: ${error.message}",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                            } finally {
+                                isRefreshing = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isRefreshing && isConnected
+                ) {
+                    if (isRefreshing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Text("Refresh Readings")
+                    }
                 }
             }
         }
+
 
         // Time Sync Card
         ElevatedCard(

@@ -13,6 +13,7 @@ import androidx.core.app.ActivityCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import org.json.JSONObject
 import java.io.IOException
 import java.util.*
 
@@ -38,6 +39,75 @@ class BluetoothManager(private val context: Context) {
         const val MANUAL_TURN_OFF = 2
         const val UPDATE_SETTINGS = 3
         const val MANUAL_SYNC_TIME = 4
+        const val REQUEST_STATUS = 5
+    }
+
+    data class DeviceStatus(
+        val time: String,
+        val lux: Float,
+        val blinds: String
+    )
+
+    @Suppress("DEPRECATION")
+    suspend fun requestStatus(): Result<DeviceStatus> {
+        if (!hasRequiredPermissions()) {
+            _errorState.value = "Missing Bluetooth permissions"
+            return Result.failure(Exception("Missing Bluetooth permissions"))
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                if (!_connectionState.value) {
+                    _errorState.value = "Not connected to device"
+                    return@withContext Result.failure(Exception("Not connected to device"))
+                }
+
+                val commandString = "$REQUEST_STATUS\n"
+                Log.d(TAG, "Requesting status")
+
+                // Clear any pending input
+                while (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                    bluetoothSocket?.inputStream?.skip(bluetoothSocket?.inputStream?.available()?.toLong() ?: 0)
+                }
+
+                bluetoothSocket?.outputStream?.write(commandString.toByteArray())
+                bluetoothSocket?.outputStream?.flush()
+
+                // Wait for response with timeout
+                val buffer = ByteArray(1024)
+                var response = ""
+
+                withTimeout(5000) {
+                    delay(100)
+                    while (!response.contains("time")) {
+                        if (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                            val bytes = bluetoothSocket?.inputStream?.read(buffer)
+                            if (bytes != null && bytes > 0) {
+                                response += String(buffer, 0, bytes)
+                            }
+                        }
+                        delay(50)
+                    }
+                }
+
+                Log.d(TAG, "Received status: $response")
+
+                // Parse JSON response
+                val jsonObject = JSONObject(response)
+                val status = DeviceStatus(
+                    time = jsonObject.getString("time"),
+                    lux = jsonObject.getDouble("lux").toFloat(),
+                    blinds = jsonObject.getString("blinds")
+                )
+
+                Result.success(status)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _errorState.value = "Status request failed: ${e.message}"
+                _connectionState.value = false
+                Result.failure(e)
+            }
+        }
     }
 
     private fun hasRequiredPermissions(): Boolean {
