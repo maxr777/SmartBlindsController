@@ -496,4 +496,77 @@ class BluetoothManager(private val context: Context) {
             _connectionState.value = false
         }
     }
+
+    data class BlindSettings(
+        val openTime: String,
+        val closeTime: String,
+        val openLux: String,
+        val closeLux: String,
+        val openMode: String,
+        val closeMode: String
+    )
+
+    suspend fun requestSettings(): Result<BlindSettings> {
+        if (!hasRequiredPermissions()) {
+            _errorState.value = "Missing Bluetooth permissions"
+            return Result.failure(Exception("Missing Bluetooth permissions"))
+        }
+
+        return withContext(Dispatchers.IO) {
+            try {
+                if (!_connectionState.value) {
+                    _errorState.value = "Not connected to device"
+                    return@withContext Result.failure(Exception("Not connected to device"))
+                }
+
+                val commandString = "6\n" // New command code for GET_SETTINGS
+                Log.d(TAG, "Requesting settings")
+
+                // Clear any pending input
+                while (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                    bluetoothSocket?.inputStream?.skip(bluetoothSocket?.inputStream?.available()?.toLong() ?: 0)
+                }
+
+                bluetoothSocket?.outputStream?.write(commandString.toByteArray())
+                bluetoothSocket?.outputStream?.flush()
+
+                // Wait for response with timeout
+                val buffer = ByteArray(1024)
+                var response = ""
+
+                withTimeout(5000) {
+                    delay(100)
+                    while (!response.contains("settings")) {
+                        if (bluetoothSocket?.inputStream?.available() ?: 0 > 0) {
+                            val bytes = bluetoothSocket?.inputStream?.read(buffer)
+                            if (bytes != null && bytes > 0) {
+                                response += String(buffer, 0, bytes)
+                            }
+                        }
+                        delay(50)
+                    }
+                }
+
+                Log.d(TAG, "Received settings: $response")
+
+                // Parse JSON response
+                val jsonObject = JSONObject(response)
+                val settings = BlindSettings(
+                    openTime = jsonObject.getString("openTime"),
+                    closeTime = jsonObject.getString("closeTime"),
+                    openLux = jsonObject.getString("openLux"),
+                    closeLux = jsonObject.getString("closeLux"),
+                    openMode = jsonObject.getString("openMode"),
+                    closeMode = jsonObject.getString("closeMode")
+                )
+
+                Result.success(settings)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _errorState.value = "Settings request failed: ${e.message}"
+                _connectionState.value = false
+                Result.failure(e)
+            }
+        }
+    }
 }

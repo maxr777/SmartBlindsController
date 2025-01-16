@@ -28,6 +28,7 @@ import android.widget.Toast
 import androidx.core.app.ActivityCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 
 class MainActivity : ComponentActivity() {
@@ -147,12 +148,12 @@ fun SmartBlindsApp(
     sharedPreferences: SharedPreferences,
     bluetoothManager: BluetoothManager
 ) {
-    var openTime by remember { mutableStateOf("07:00") }
-    var closeTime by remember { mutableStateOf("20:00") }
-    var openLuxText by remember { mutableStateOf("50000") }
-    var closeLuxText by remember { mutableStateOf("10000") }
-    var openMode by remember { mutableStateOf("TIME") }
-    var closeMode by remember { mutableStateOf("TIME") }
+    var openTime by rememberSaveable { mutableStateOf(sharedPreferences.getString("openTime", "07:00") ?: "07:00") }
+    var closeTime by rememberSaveable { mutableStateOf(sharedPreferences.getString("closeTime", "20:00") ?: "20:00") }
+    var openLuxText by rememberSaveable { mutableStateOf(sharedPreferences.getString("openLux", "50000") ?: "50000") }
+    var closeLuxText by rememberSaveable { mutableStateOf(sharedPreferences.getString("closeLux", "10000") ?: "10000") }
+    var openMode by rememberSaveable { mutableStateOf(sharedPreferences.getString("openMode", "TIME") ?: "TIME") }
+    var closeMode by rememberSaveable { mutableStateOf(sharedPreferences.getString("closeMode", "TIME") ?: "TIME") }
     var isConnected by remember { mutableStateOf(false) }
 
     // State variables for sensor readings
@@ -165,6 +166,37 @@ fun SmartBlindsApp(
     var deviceTimeSync by remember { mutableStateOf(false) }
     var lastSyncTime by remember {
         mutableStateOf(sharedPreferences.getString("lastSyncTime", "Never") ?: "Never")
+    }
+
+    LaunchedEffect(isConnected) {
+        if (isConnected) {
+            bluetoothManager.requestSettings()
+                .onSuccess { settings ->
+                    openTime = settings.openTime
+                    closeTime = settings.closeTime
+                    openLuxText = settings.openLux
+                    closeLuxText = settings.closeLux
+                    openMode = settings.openMode
+                    closeMode = settings.closeMode
+
+                    // Save to SharedPreferences
+                    sharedPreferences.edit().apply {
+                        putString("openTime", settings.openTime)
+                        putString("closeTime", settings.closeTime)
+                        putString("openLux", settings.openLux)
+                        putString("closeLux", settings.closeLux)
+                        putString("openMode", settings.openMode)
+                        putString("closeMode", settings.closeMode)
+                    }.apply()
+                }
+                .onFailure { error ->
+                    Toast.makeText(
+                        activity,
+                        "Failed to load settings: ${error.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+        }
     }
 
     // Collect Bluetooth connection state
@@ -601,11 +633,21 @@ fun SmartBlindsApp(
                                 "openMode" to openMode,
                                 "closeMode" to closeMode
                             )
+
                             when (val result = bluetoothManager.sendSettings(settings)) {
                                 is BluetoothManager.BluetoothResult.Error -> {
                                     Toast.makeText(activity, result.message, Toast.LENGTH_SHORT).show()
                                 }
                                 is BluetoothManager.BluetoothResult.Success -> {
+                                    // Save to SharedPreferences after successful update
+                                    sharedPreferences.edit().apply {
+                                        putString("openTime", openTime)
+                                        putString("closeTime", closeTime)
+                                        putString("openLux", openLuxText)
+                                        putString("closeLux", closeLuxText)
+                                        putString("openMode", openMode)
+                                        putString("closeMode", closeMode)
+                                    }.apply()
                                     Toast.makeText(activity, "Settings updated successfully", Toast.LENGTH_SHORT).show()
                                 }
                             }
